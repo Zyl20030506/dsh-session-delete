@@ -22,7 +22,7 @@
  * the Host is refused, and a bin entry whose manifest is unreadable is left
  * alone instead of guessed at.
  *
- * @module @local/session-delete
+ * @module dsh-session-delete
  */
 import {
   mkdir,

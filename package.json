@@ -1,11 +1,18 @@
 {
-  "name": "@local/session-delete",
+  "name": "dsh-session-delete",
   "version": "1.0.0",
-  "private": true,
   "type": "module",
   "description": "A recycle bin for DeepSeek Harness sessions: a red menu row moves a session into a 3-day bin that can be restored or purged from the sidebar foot.",
   "license": "MIT",
   "author": "zyl54",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zyl20030506/dsh-session-delete.git"
+  },
+  "homepage": "https://github.com/Zyl20030506/dsh-session-delete#readme",
+  "bugs": {
+    "url": "https://github.com/Zyl20030506/dsh-session-delete/issues"
+  },
   "keywords": [
     "dsh",
     "deepseek-harness",

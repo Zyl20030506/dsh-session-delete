@@ -25,19 +25,23 @@ DSH 原生侧栏对会话只有「归档」，没有删除；会话日志会一�
 
 ## 安装
 
-插件是一个普通的 DSH bundle（`package.json` 里声明 `dsh.bundle.patch` 与 `dsh.client`）。把本目录放到任意位置，然后在 DSH 里装：
+插件是一个普通的 DSH bundle（`package.json` 里声明 `dsh.bundle.patch` 与 `dsh.client`）。
+
+从 GitHub 装：
+
+```bash
+dsh plugin --profile web add github:Zyl20030506/dsh-session-delete
+```
+
+装完重启 DSH（客户端插件代码缓存在页面里）。卸载：`dsh plugin --profile web remove dsh-session-delete`。
+
+从本机目录装（改代码时用，走 `link:`，改完刷新页面即生效）：
 
 ```text
 plugin_manager  action: install_bundle  target: <本目录的绝对路径>
 ```
 
-它会把这个目录以 `link:` 方式装进当前 profile，并把 bundle 加进 `dsh.profile.bundles`。装完**刷新一次页面**（客户端插件代码在页面里缓存）。卸载：
-
-```text
-plugin_manager  action: remove_bundle  target: @local/session-delete
-```
-
-> 包名目前是 `@local/session-delete`（本地私有作用域）。要发布到 npm 或想换个名字，改 `package.json` 的 `name`、`client.js` 里 `_ModuleLoader__.load({ id })` 的 id，以及 profile 里的 bundle 名三者保持一致即可。
+> 包名 `dsh-session-delete` 出现在三处，改名必须一起改：`package.json` 的 `name`、`client.js` 里 `_ModuleLoader__.load({ id })` 的 id、`cordis.patch.yml` 里的 `name`。profile 里的 bundle 名和依赖键由安装器按包名写入，不要手改。
 
 ## 配置
 
@@ -45,7 +49,7 @@ plugin_manager  action: remove_bundle  target: @local/session-delete
 
 ```yaml
 - id: session-delete
-  name: '@local/session-delete'
+  name: 'dsh-session-delete'
   config:
     retentionDays: 7    # 默认 3
     sweepMinutes: 60    # 默认 30

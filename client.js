@@ -12,7 +12,7 @@
  * disappears without a page reload.
  */
 window.__ModuleLoader__.load({
-  id: '@local/session-delete',
+  id: 'dsh-session-delete',
   factory(require) {
     const React = require('react')
 
