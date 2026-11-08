@@ -116,13 +116,30 @@ export async function handleDelete(ctx, settings, request) {
       error: { code: 'invalid-session', message: '会话标识无效，未执行任何操作。' },
     })
   }
+  // Capabilities this build needs before it may move a single file. A missing
+  // one would leave a half-trashed Session (log moved, row still visible), so
+  // refuse up front with a readable reason instead.
+  const missing = missingCapabilities(ctx)
+  if (missing.length > 0) {
+    return reply(409, {
+      ok: false,
+      error: {
+        code: 'incompatible',
+        missing,
+        message: `插件与当前 DSH 版本不兼容（缺少 ${missing.join('、')}），未执行任何操作。`,
+      },
+    })
+  }
   // A live Agent object is not the same thing as "open in a window": the Host
   // keeps Agents for Sessions the page merely visited, and those idle Agents do
   // not hold the log file (an idle rename succeeds). What actually blocks a safe
-  // move is running work, so ask the composition's own activity providers.
+  // move is running work, so ask the composition's own activity providers, and
+  // keep the loop's own `status` as a second, independent signal in case that
+  // event's providers ever change shape.
   const activity = await activityOf(ctx, sessionId)
-  if (activity === null ? isLive(ctx, sessionId) : activity.length > 0) {
-    return reply(409, busyRefusal(activity ?? []))
+  const running = isRunning(ctx, sessionId)
+  if (running || (activity === null ? isLive(ctx, sessionId) : activity.length > 0)) {
+    return reply(409, busyRefusal(activity ?? [], running))
   }
 
   try {
@@ -152,7 +169,7 @@ export async function handleTrash(ctx, settings, request) {
   if (action === 'list') {
     try {
       await serialize(() => sweep(ctx, settings))
-      const value = await listTrash(settings)
+      const value = await listTrash(ctx, settings)
       return reply(200, { ok: true, value })
     } catch (error) {
       return reply(500, failure(error))
@@ -542,14 +559,16 @@ async function reconcileEntries(ctx) {
 
 /**
  * Read the bin for the browser.
+ * @param ctx - Host context, for the capability self-check.
  * @param settings - resolved retention policy.
- * @returns items plus the retention the list was filtered by.
+ * @returns items, the retention the list was filtered by, and missing capabilities.
  */
-async function listTrash(settings) {
+async function listTrash(ctx, settings) {
   const entries = await listEntries()
   entries.sort((left, right) => right.deletedAt - left.deletedAt)
   return {
     retentionDays: settings.retentionDays,
+    missing: missingCapabilities(ctx),
     items: entries.map((entry) => ({
       sessionId: entry.sessionId,
       title: typeof entry.title === 'string' ? entry.title : '',
@@ -558,6 +577,24 @@ async function listTrash(settings) {
       empty: entry.empty,
     })),
   }
+}
+
+/**
+ * Capabilities a safe trash needs. `sessionPersistence.stat` locates the log,
+ * and the Workspace registry both hides and restores the row; without them this
+ * build would move history while leaving the sidebar inconsistent.
+ * @param ctx - Host context.
+ * @returns human-readable names of the missing capabilities.
+ */
+function missingCapabilities(ctx) {
+  const registry = ctx.get('workspaceRegistry')
+  const missing = []
+  if (typeof ctx?.sessionPersistence?.stat !== 'function') missing.push('sessionPersistence.stat')
+  if (typeof registry?.archiveSession !== 'function') missing.push('workspaceRegistry.archiveSession')
+  if (typeof registry?.unarchiveSession !== 'function') missing.push('workspaceRegistry.unarchiveSession')
+  if (typeof registry?.list !== 'function') missing.push('workspaceRegistry.list')
+  if (typeof ctx?.waterfall !== 'function') missing.push('events.waterfall')
+  return missing
 }
 
 /**
@@ -777,6 +814,18 @@ function isLive(ctx, sessionId) {
 }
 
 /**
+ * Whether the loop itself reports a turn in flight. Independent of the activity
+ * waterfall, so a renamed or reshaped provider cannot silently weaken the guard.
+ * @param ctx - Host context.
+ * @param sessionId - Session to probe.
+ * @returns true while the Agent's status is `running`.
+ */
+function isRunning(ctx, sessionId) {
+  const agents = ctx.get('agents')
+  return agents?.get?.(sessionId)?.status === 'running'
+}
+
+/**
  * What is actually running for this Session, from the same provider waterfall
  * the Workspace archive flow consults. `null` means the question could not be
  * asked in this composition, so callers fall back to the liveness test.
@@ -824,10 +873,12 @@ function busyMessage(kinds) {
 /**
  * The refusal shown for a Session that still has running work.
  * @param activity - what the providers reported.
+ * @param running - whether the Agent's own status says a turn is in flight.
  * @returns a reply payload.
  */
-function busyRefusal(activity) {
+function busyRefusal(activity, running = false) {
   const kinds = [...new Set((activity ?? []).map((entry) => String(entry?.kind ?? 'work')))]
+  if (kinds.length === 0 && running) kinds.push('turn')
   return {
     ok: false,
     error: {

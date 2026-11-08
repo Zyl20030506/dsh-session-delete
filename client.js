@@ -34,6 +34,7 @@ window.__ModuleLoader__.load({
         'dialog.pending': 'Moving to trash…',
         'bin.title': 'Trash',
         'bin.hint': 'A session is deleted for good {days} days after it was moved here.',
+        'bin.incompatible': 'Some DSH capabilities this plugin needs are missing: {names}. Deleting is disabled; restoring and purging still work.',
         'bin.loading': 'Loading…',
         'bin.empty': 'The trash is empty.',
         'bin.restore': 'Restore',
@@ -55,6 +56,7 @@ window.__ModuleLoader__.load({
         'error.generic': 'The operation failed.',
         'error.busy': 'This session still has work running ({kinds}). Stop it first, then delete.',
         'error.locked': 'The session log is still in use. Try again, or restart the app and delete it.',
+        'error.incompatible': 'This plugin does not match this DSH build (missing {names}). Nothing was changed.',
         'error.current': 'This is the session the window is showing. Switch to another session first, then delete it.',
         'kind.turn': 'a reply in progress',
         'kind.subagent': 'subagents running',
@@ -71,6 +73,7 @@ window.__ModuleLoader__.load({
         'dialog.pending': '正在移入回收站…',
         'bin.title': '回收站',
         'bin.hint': '删除后保留 {days} 天，到期自动清除。',
+        'bin.incompatible': '当前 DSH 缺少本插件需要的能力：{names}。删除功能已停用，回收站里的恢复与清除仍可用。',
         'bin.loading': '正在读取…',
         'bin.empty': '回收站是空的。',
         'bin.restore': '恢复',
@@ -92,6 +95,7 @@ window.__ModuleLoader__.load({
         'error.generic': '操作失败。',
         'error.busy': '这个会话还有正在运行的工作（{kinds}），先停止再删除。',
         'error.locked': '会话日志文件仍被占用，请稍后再试；如果还不行，重启应用后再删除。',
+        'error.incompatible': '插件与当前 DSH 版本不兼容（缺少 {names}），未执行任何操作。',
         'error.current': '这是当前正在查看的会话。先切换到其他会话，再删除它。',
         'kind.turn': '正在生成回复',
         'kind.subagent': '子任务在运行',
@@ -108,6 +112,7 @@ window.__ModuleLoader__.load({
         'dialog.pending': 'ゴミ箱に移動しています…',
         'bin.title': 'ゴミ箱',
         'bin.hint': '削除から {days} 日後に完全に削除されます。',
+        'bin.incompatible': 'この DSH には必要な機能がありません：{names}。削除は無効ですが、復元と完全削除は使えます。',
         'bin.loading': '読み込み中…',
         'bin.empty': 'ゴミ箱は空です。',
         'bin.restore': '復元',
@@ -129,6 +134,7 @@ window.__ModuleLoader__.load({
         'error.generic': '操作に失敗しました。',
         'error.busy': 'このセッションにはまだ実行中の作業があります（{kinds}）。停止してから削除してください。',
         'error.locked': 'セッションログがまだ使用中です。しばらくしてから再試行するか、アプリを再起動してから削除してください。',
+        'error.incompatible': 'このプラグインは現在の DSH と一致しません（{names} が不足）。何も変更されていません。',
         'error.current': 'これはいま表示中のセッションです。別のセッションに切り替えてから削除してください。',
         'kind.turn': '応答を生成中',
         'kind.subagent': 'サブエージェント実行中',
@@ -170,6 +176,7 @@ window.__ModuleLoader__.load({
       status: 'idle',
       items: [],
       retentionDays: 3,
+      missing: [],
       notice: null,
       error: null,
       busyId: null,
@@ -214,14 +221,40 @@ window.__ModuleLoader__.load({
 .sd-foot-rail:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .sd-badge{min-width:16px;height:16px;padding:0 5px;box-sizing:border-box;border-radius:8px;background:var(--dsw-alias-brand-primary);color:#fff;font-size:10px;line-height:16px;text-align:center}
 .sd-badge-float{position:absolute;top:-1px;right:-1px;min-width:15px;height:15px;line-height:15px}
+.sd-warn{margin-top:12px;color:var(--dsw-alias-state-warn-primary);font-size:13px;line-height:20px}
 `
+
+    /**
+     * Register one slot entry, keeping a broken extension point from taking the
+     * rest of the plugin down with it. A newer DSH that renames a slot or changes
+     * its registration shape leaves the other surfaces working and says so in
+     * the console.
+     * @param ctx - browser plugin context.
+     * @param slot - target slot name.
+     * @param options - registration options besides `name`.
+     * @param Component - React component for the entry.
+     */
+    function registerIn(ctx, slot, options, Component) {
+      try {
+        ctx.slots.inject(slot, () => {
+          try {
+            return ctx.slots.register({ name: slot, ...options }, Component)
+          } catch (error) {
+            console.warn(`[session-delete] ${slot} entry failed; continuing without it.`, error)
+            return () => {}
+          }
+        })
+      } catch (error) {
+        console.warn(`[session-delete] ${slot} injection failed; continuing without it.`, error)
+      }
+    }
 
     /**
      * POST one operation to a Host route.
      * @param route - document-relative route.
      * @param body - JSON payload.
      * @returns the `value` of an ok envelope.
-     * @throws an Error carrying the Host's message and code.
+     * @throws an Error carrying the Host's message, code, kinds and missing capabilities.
      */
     async function post(route, body) {
       const response = await fetch(route, {
@@ -235,6 +268,7 @@ window.__ModuleLoader__.load({
         const failure = new Error(payload?.error?.message ?? 'request-failed')
         failure.code = payload?.error?.code
         failure.kinds = payload?.error?.kinds
+        failure.missing = payload?.error?.missing
         throw failure
       }
       return payload.value
@@ -263,6 +297,10 @@ window.__ModuleLoader__.load({
         return t('error.busy', { kinds: names.length > 0 ? names : '—' })
       }
       if (code === 'file-busy') return t('error.locked')
+      if (code === 'incompatible') {
+        const missing = Array.isArray(failure.missing) ? failure.missing : []
+        return t('error.incompatible', { names: missing.length > 0 ? missing.join('、') : '?' })
+      }
       return typeof failure?.message === 'string' && failure.message.length > 0 && failure.message !== 'request-failed'
         ? failure.message
         : t('error.generic')
@@ -554,6 +592,9 @@ window.__ModuleLoader__.load({
             h('button', { key: 'close', type: 'button', className: 'sd-btn', disabled: state.emptying, onClick: close }, t('bin.close')),
           ],
         },
+        state.missing.length > 0
+          ? h('div', { className: 'sd-warn', role: 'status' }, t('bin.incompatible', { names: state.missing.join('、') }))
+          : null,
         h('div', { className: 'sd-list', role: 'list' }, rows),
         state.notice === null ? null : h('div', { className: 'sd-notice', role: 'status' }, state.notice),
         state.error === null ? null : h('div', { className: 'sd-error', role: 'alert' }, state.error),
@@ -616,6 +657,7 @@ window.__ModuleLoader__.load({
           status: 'ready',
           items: Array.isArray(value?.items) ? value.items : [],
           retentionDays: Number(value?.retentionDays) > 0 ? Number(value.retentionDays) : 3,
+          missing: Array.isArray(value?.missing) ? value.missing : [],
           busyId: null,
         })
         count.set(Array.isArray(value?.items) ? value.items.length : 0)
@@ -688,57 +730,58 @@ window.__ModuleLoader__.load({
         void loadBin(ctx.locale.bind(namespace))
       }
 
-      ctx.inject(['contextMenus'], (scope) => {
-        scope.effect(() => scope.contextMenus.register({
-          id: 'session.delete',
-          target: 'session',
-          order: 700,
-          observe: () => [],
-          resolve: (target) => [{
-            id: 'delete',
-            label: label('menu.delete', 'Delete session'),
-            icon: { key: 'session-delete.trash' },
-            danger: true,
-            afterContent: true,
-            run: () => {
-              confirm.set({
-                sessionId: String(target.sessionId),
-                title: typeof target.displayTitle === 'string' ? target.displayTitle : '',
-              })
-            },
-          }],
-        }), 'session-delete: session menu')
-      })
+      // Each surface is registered on its own, so a future DSH that renames one
+      // extension point leaves the others working instead of blanking the whole
+      // plugin.
+      try {
+        ctx.inject(['contextMenus'], (scope) => {
+          try {
+            scope.effect(() => scope.contextMenus.register({
+              id: 'session.delete',
+              target: 'session',
+              order: 700,
+              observe: () => [],
+              resolve: (target) => [{
+                id: 'delete',
+                label: label('menu.delete', 'Delete session'),
+                icon: { key: 'session-delete.trash' },
+                danger: true,
+                afterContent: true,
+                run: () => {
+                  confirm.set({
+                    sessionId: String(target.sessionId),
+                    title: typeof target.displayTitle === 'string' ? target.displayTitle : '',
+                  })
+                },
+              }],
+            }), 'session-delete: session menu')
+          } catch (error) {
+            console.warn('[session-delete] session menu contribution failed; the footer trash still works.', error)
+          }
+        })
+      } catch (error) {
+        console.warn('[session-delete] contextMenus injection failed; the footer trash still works.', error)
+      }
 
-      ctx.slots.inject('contextMenu.icon', () => ctx.slots.register({
-        name: 'contextMenu.icon',
-        key: 'session-delete.trash',
-      }, TrashGlyph))
-
-      ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-        name: 'sidebar.footer.action',
+      registerIn(ctx, 'contextMenu.icon', { key: 'session-delete.trash' }, TrashGlyph)
+      registerIn(ctx, 'sidebar.footer.action', {
         id: 'session-delete.trash',
         order: 0,
         locale: namespace,
         inject: () => ({ openBin }),
-      }, TrashButton))
-
-      ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-        name: 'shell.overlay',
+      }, TrashButton)
+      registerIn(ctx, 'shell.overlay', {
         id: 'session-delete.confirm',
         locale: namespace,
         inject: () => ({ refresh }),
-      }, DeleteDialog))
-
-      ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-        name: 'shell.overlay',
+      }, DeleteDialog)
+      registerIn(ctx, 'shell.overlay', {
         id: 'session-delete.bin',
         locale: namespace,
         inject: () => ({ refresh }),
-      }, BinDialog))
+      }, BinDialog)
 
       void refreshBadge()
-
     }
 
     return { inject, apply }

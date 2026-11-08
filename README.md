@@ -95,6 +95,25 @@ POST /api/plugin.session-trash    { action, sessionId?, payload? } → list | re
 - **只动会话自己的文件**：目录里出现非会话日志的文件时，只移动日志文件，目录与外来文件都保留；恢复时原样放回旁边。
 - **清单读不出来就不动**：`meta.json` 缺失或损坏的条目既不会自动删，也不会被猜着恢复。
 
+## 兼容性（DSH 升级会不会让它失效）
+
+会，取决于碰到哪一层。插件依赖分三档：
+
+| 档位 | 依赖 | 失效表现 |
+|---|---|---|
+| 稳（DSH 的正式扩展点） | `/api` Fetch 路由、`sessionPersistence.stat()` 的 `location.path`、`workspaceRegistry.archiveSession/unarchiveSession/pinSession/list`、`contextMenu.icon` / `sidebar.footer.action` / `shell.overlay` 三个 slot、bundle patch 格式 | 基本不会变 |
+| 可能漂移 | `contextMenus.register` 的动作字段（`danger` / `afterContent`）、`sessions.refresh()`、`Workspace.attachSession/insertSessionBefore/detachSession`、投影缓存路径 `storages/session_projcache/sessions/<id>.json` | 菜单项不出现 / 列表不刷新 / 清缓存落空（只留几 KB 垃圾） |
+| 最脆 | 冷启动时服务就绪顺序、`workspace/session-activity` 的事件名与分类 | 以前踩过：菜单项静默消失、误判"窗口打开着" |
+
+为了不在升级后"静默坏掉"，插件内置了四道自适应：
+
+1. **能力自检**：每次删除前确认 `sessionPersistence.stat`、`workspaceRegistry.archiveSession/unarchiveSession/list`、`events.waterfall` 都在。缺一个就**拒绝删除**（返回 `incompatible` 并列出缺什么），不会出现"文件搬走了、侧栏还留着"的半成品。回收站弹窗顶部也会提示当前缺少的能力。
+2. **活动判断双保险**：同时看 `workspace/session-activity` 瀑布（`turn`/`subagent`/`job`/`schedule`）和 Agent 自己的 `status === 'running'`。任一说在跑就拒绝——即使活动事件的 provider 以后改名，也不会退化成"允许删除运行中的会话"。
+3. **注册隔离**：菜单项、回收站按钮、两个弹窗各自独立注册，单个扩展点失败只在控制台留一行 `[session-delete] … failed`，其余功能照常，不会整插件消失。
+4. **数据格式自带版本**：回收站清单 `meta.json` 有 `version`，旧条目不会被新版本误读；日志路径来自后端而不是硬编码；任何一步失败都回滚。
+
+失败时怎么排查：打开 DevTools 控制台搜 `session-delete`；回收站弹窗顶部会显示"当前 DSH 缺少本插件需要的能力：…"；`workspace.json` 里的归档标记与 `session-trash/v1/*/meta.json` 都是可读的纯 JSON。
+
 ## 已知限制
 
 - **不删会话之外的内容**：用户上传的图片/文件（`~/.dsh/attachments`，按内容哈希多处共享）、溢出的临时大结果（`%TEMP%\dsh-spill-*`）、以及会话在工作区里产出的文件都不在回收站范围内。
@@ -111,7 +130,7 @@ POST /api/plugin.session-trash    { action, sessionId?, payload? } → list | re
 npm test     # 等价于 node test/trash.test.mjs
 ```
 
-测试用临时目录 + 伪造的 Cordis 服务驱动真实 Host 逻辑，覆盖 17 个用例：入站（归档隐藏 / 搬文件 / 清缓存）、列表、恢复（原位、外来文件共存、旧清单重建账目）、单个清除、清空、到期清扫、归档条目保留墓碑、孤儿墓碑清理、活动会话拒绝（含类型）、活但空闲可删、活动探测不可用时的保守回退、归档准入拒绝时不动文件、未落盘会话。
+测试用临时目录 + 伪造的 Cordis 服务驱动真实 Host 逻辑，覆盖 18 个用例：入站（归档隐藏 / 搬文件 / 清缓存）、列表、恢复（原位、外来文件共存、旧清单重建账目）、单个清除、清空、到期清扫、归档条目保留墓碑、孤儿墓碑清理、活动会话拒绝（含类型与仅靠 `status` 的判定）、活但空闲可删、活动探测不可用时的保守回退、归档准入拒绝时不动文件、缺少能力时拒绝删除、未落盘会话。
 
 ## 目录结构
 
@@ -130,7 +149,7 @@ npm test     # 等价于 node test/trash.test.mjs
 
 A recycle bin for DeepSeek Harness sessions. Deleting a session moves its log out of the persistence root into `<DSH_HOME>/session-trash/v1/<id>/` (with a `meta.json`), hides the row through DSH's archive set, and keeps it restorable for `retentionDays` (default 3) before the sweep removes it for good.
 
-Install with `plugin_manager action: install_bundle target: <this directory>`, then reload the page. Config: `retentionDays`, `sweepMinutes`. Run `npm test` for the 17-case Host suite. Sessions with running work are refused (activity waterfall); idle-but-resident agents do not block. Attachments, spill files and workspace output are intentionally left alone.
+Install with `plugin_manager action: install_bundle target: <this directory>`, then reload the page. Config: `retentionDays`, `sweepMinutes`. Run `npm test` for the 18-case Host suite. Sessions with running work are refused (activity waterfall); idle-but-resident agents do not block. Attachments, spill files and workspace output are intentionally left alone.
 
 ## License
 

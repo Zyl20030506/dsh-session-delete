@@ -25,7 +25,7 @@ const metaPath = join(entryDir, 'meta.json')
  * Fake Host context: a Workspace that keeps its accounting, an archive set that
  * behaves like the registry's, and the persistence probe.
  */
-function makeCtx({ sessionDir, live = false, accounted = true, activity = undefined }) {
+function makeCtx({ sessionDir, live = false, running = false, accounted = true, activity = undefined }) {
   const state = {
     members: accounted ? [ID, 'session-next'] : ['session-next'],
     archived: new Set(),
@@ -81,15 +81,17 @@ function makeCtx({ sessionDir, live = false, accounted = true, activity = undefi
   }
   const ctx = {
     get(key) {
-      if (key === 'agents') return { get: (id) => (live && id === ID ? { id, status: 'idle' } : undefined) }
+      if (key === 'agents') {
+        return {
+          get: (id) => (live && id === ID ? { id, status: running ? 'running' : 'idle' } : undefined),
+        }
+      }
       if (key === 'workspaceRegistry') return registry
       return undefined
     },
-    ...activity === undefined
-      ? {}
-      : {
-        waterfall: () => (activity === 'throw' ? Promise.reject(new Error('no providers')) : Promise.resolve(activity)),
-      },
+    // Cordis always exposes `waterfall`; the fake mirrors that and lets a case
+    // choose what the providers answer.
+    waterfall: () => (activity === 'throw' ? Promise.reject(new Error('no providers')) : Promise.resolve(activity ?? [])),
     sessionPersistence: {
       async stat(id) {
         const log = join(root, 'sessions', '--proj--', id, 'session.v4.jsonl.zstd')
@@ -243,7 +245,16 @@ async function reset() {
   await mkdir(secondDir, { recursive: true })
   await writeFile(join(secondDir, 'session.v4.jsonl.zstd'), 'log')
   const ctx2 = {
-    get: () => undefined,
+    get: (key) => (key === 'workspaceRegistry'
+      ? {
+        list: () => [],
+        archivedSessionIds: [],
+        pinnedSessionIds: [],
+        archiveSession: async () => {},
+        unarchiveSession: async () => {},
+      }
+      : undefined),
+    waterfall: () => Promise.resolve([]),
     sessionPersistence: {
       stat: async (id) => (id === second ? { location: { kind: 'jsonl', path: join(secondDir, 'session.v4.jsonl.zstd') } } : undefined),
     },
@@ -320,9 +331,10 @@ async function reset() {
 {
   await reset()
   const sessionDir = await prepareSession()
-  const live = await call(module.handleDelete, makeCtx({ sessionDir, live: true }).ctx, { sessionId: ID })
+  const live = await call(module.handleDelete, makeCtx({ sessionDir, live: true, running: true }).ctx, { sessionId: ID })
   assert.equal(live.status, 409)
   assert.equal(live.payload.error.code, 'session-busy')
+  assert.deepEqual(live.payload.error.kinds, ['turn'], 'the loop status alone names the turn')
   assert.ok(existsSync(join(sessionDir, 'session.v4.jsonl.zstd')), 'live session untouched')
   for (const bad of ['', '../etc', 'a/b', 42]) {
     const refusal = await call(module.handleDelete, makeCtx({ sessionDir }).ctx, { sessionId: bad })
@@ -398,6 +410,27 @@ async function reset() {
   assert.ok(existsSync(join(sessionDir, 'session.v4.jsonl.zstd')), 'files untouched')
   assert.ok(!existsSync(dataDir), 'no bin entry left behind')
   console.log('ok  8e archive admission refusal aborts before moving')
+}
+
+// 8f. A missing capability refuses instead of half-trashing ---------------
+{
+  await reset()
+  const sessionDir = await prepareSession()
+  const { ctx, state } = makeCtx({ sessionDir })
+  const registry = ctx.get('workspaceRegistry')
+  registry.archiveSession = undefined
+  const { status, payload } = await call(module.handleDelete, ctx, { sessionId: ID })
+  assert.equal(status, 409, JSON.stringify(payload))
+  assert.equal(payload.error.code, 'incompatible')
+  assert.ok(payload.error.missing.includes('workspaceRegistry.archiveSession'))
+  assert.match(payload.error.message, /不兼容/)
+  assert.ok(existsSync(join(sessionDir, 'session.v4.jsonl.zstd')), 'files untouched')
+  assert.ok(!existsSync(dataDir), 'no bin entry created')
+  assert.equal(state.detached, 0)
+
+  const listed = await call(module.handleTrash, ctx, { action: 'list' })
+  assert.deepEqual(listed.payload.value.missing, ['workspaceRegistry.archiveSession'], 'the bin reports the gap')
+  console.log('ok  8f a missing capability refuses and is reported')
 }
 
 // 9. A Session with no stored log ---------------------------------------
