@@ -1,0 +1,14 @@
+# Dependencies are never installed here: the bundle has no runtime deps.
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs and local scratch
+*.log
+session-trash/

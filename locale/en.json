@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session recycle bin",
+    "description": "Deletion moves a sidebar Session into a 3-day recycle bin instead of erasing it. Restore it or delete it for good from the bin at the foot of the sidebar."
+  }
+}
